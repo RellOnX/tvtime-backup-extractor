@@ -14,6 +14,7 @@ internal static class CompileCheckProgram
         Directory.CreateDirectory(temporaryRoot);
         try
         {
+            BitLockerProtectionTests.RunAsync().GetAwaiter().GetResult();
             RequireArtifactContractLimits();
             var output = CreateValidOutput(temporaryRoot);
             using (var accepted = RecoveryOutputValidator.ValidateCompletedOutput(output))

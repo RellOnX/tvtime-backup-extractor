@@ -37,5 +37,6 @@
     <Compile Include="../TVTimeRecovery.Windows/*.cs" />
     <Compile Include="GeneratedXamlStubs.cs" />
     <Compile Include="Program.cs" />
+    <Compile Include="BitLockerProtectionTests.cs" />
   </ItemGroup>
 </Project>

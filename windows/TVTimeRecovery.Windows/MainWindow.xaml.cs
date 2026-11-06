@@ -131,15 +131,41 @@ public sealed partial class MainWindow : Window
     {
         RecoverButton.IsEnabled = false;
         SelectBackupButton.IsEnabled = false;
+        SourceKind.IsEnabled = false;
+        BackupPassword.IsEnabled = false;
+        SensitiveConfirmation.IsEnabled = false;
         CancelButton.IsEnabled = true;
         ClearCompletedOutput();
         ResultActions.Visibility = Visibility.Collapsed;
         _cancellation = new CancellationTokenSource();
+        var helperMayHaveStarted = false;
         try
         {
-            var outputParent = PrivateRecoveryStore.RequireEncryptedParent();
+            var protectionConsent = new ContentDialog
+            {
+                XamlRoot = Content.XamlRoot,
+                Title = "Check Windows drive protection?",
+                Content = "Windows will ask permission to check drive protection. Only this read-only status check uses administrator access. The recovery app and backup helper stay at ordinary user access.",
+                PrimaryButtonText = "Check protection",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Close,
+            };
+            ContentDialogResult consent;
+            using (var registration = _cancellation.Token.Register(() =>
+                DispatcherQueue.TryEnqueue(() => protectionConsent.Hide())))
+            {
+                consent = await protectionConsent.ShowAsync();
+            }
+            _cancellation.Token.ThrowIfCancellationRequested();
+            if (consent != ContentDialogResult.Primary)
+                throw new OperationCanceledException();
+            StatusBar.Title = "Checking drive protection";
+            StatusBar.Message = "Verifying protection before creating private recovery output.";
+            var outputParent = await PrivateRecoveryStore.RequireEncryptedParentAsync(_cancellation.Token);
+            _cancellation.Token.ThrowIfCancellationRequested();
             var output = PrivateRecoveryStore.FreshOutput(outputParent);
             var recovery = new RecoveryCoordinator();
+            helperMayHaveStarted = true;
             _completedOutput = await recovery.RecoverAsync(
                 sourceKind,
                 backupPath,
@@ -162,7 +188,9 @@ public sealed partial class MainWindow : Window
         {
             StatusBar.Severity = InfoBarSeverity.Warning;
             StatusBar.Title = "Recovery cancelled";
-            StatusBar.Message = "Incomplete output was preserved. Start again with a fresh private folder.";
+            StatusBar.Message = helperMayHaveStarted
+                ? "Incomplete output was preserved. Start again with a fresh private folder."
+                : "No recovery was started.";
             RecoveryDiagnostics.Record(RecoveryDiagnostic.RecoveryCancelled);
         }
         catch (RecoveryUserException error)
@@ -185,6 +213,9 @@ public sealed partial class MainWindow : Window
             _cancellation = null;
             CancelButton.IsEnabled = false;
             SelectBackupButton.IsEnabled = true;
+            SourceKind.IsEnabled = true;
+            BackupPassword.IsEnabled = _sourceKind is "ios_encrypted_backup" or "tvtime_official_export";
+            SensitiveConfirmation.IsEnabled = true;
             RecoverButton.IsEnabled = _backupPath is not null;
         }
     }

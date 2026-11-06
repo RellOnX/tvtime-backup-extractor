@@ -1,6 +1,8 @@
 name: Windows alpha package
 
 on:
+  push:
+    branches: [fix/bitlocker-status-verification]
   pull_request:
     paths:
       - ".github/workflows/windows-alpha.yml"
@@ -45,6 +47,13 @@ jobs:
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
           dotnet-version: "8.0.423"
+      - name: Run synthetic protection and native-validator tests
+        shell: powershell
+        run: |
+          dotnet restore windows/TVTimeRecovery.Windows.CompileCheck/TVTimeRecovery.Windows.CompileCheck.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { throw "The locked synthetic test restore failed." }
+          dotnet run --project windows/TVTimeRecovery.Windows.CompileCheck/TVTimeRecovery.Windows.CompileCheck.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "The synthetic protection or native-validator tests failed." }
       - name: Parse-check Windows packaging scripts
         shell: powershell
         run: |

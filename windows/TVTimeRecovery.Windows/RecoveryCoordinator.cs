@@ -12,6 +12,7 @@ internal enum RecoveryDiagnostic
     RecoveryCompleted,
     RecoveryCancelled,
     DestinationUnencrypted,
+    DestinationProtectionUnverified,
     BackupRejected,
     OutputValidationFailed,
     LocalHelperError,
@@ -71,11 +72,31 @@ internal sealed class ValidatedRecoveryOutput : IDisposable
 
 internal static class PrivateRecoveryStore
 {
-    public static string RequireEncryptedParent()
+    public static async Task<string> RequireEncryptedParentAsync(CancellationToken cancellationToken)
     {
         var root = ApplicationData.Current.LocalFolder.Path;
         var drive = Path.GetPathRoot(root);
-        if (string.IsNullOrWhiteSpace(drive) || !BitLockerProtection.IsEnabled(drive))
+        var protection = await BitLockerProtection.QueryAsync(drive, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (protection == BitLockerProtectionStatus.PermissionCancelled)
+        {
+            throw new RecoveryUserException(
+                "The Windows protection check was cancelled. No recovery was started.",
+                RecoveryDiagnostic.DestinationProtectionUnverified);
+        }
+        if (protection == BitLockerProtectionStatus.Uncertain)
+        {
+            throw new RecoveryUserException(
+                "Windows could not confirm that the protection check finished. No recovery was started. Do not retry until the Windows prompt or status check has ended.",
+                RecoveryDiagnostic.DestinationProtectionUnverified);
+        }
+        if (protection == BitLockerProtectionStatus.Unverified)
+        {
+            throw new RecoveryUserException(
+                "Windows could not verify device encryption or BitLocker protection. No recovery was started. An administrator may need to check the output drive's protection status.",
+                RecoveryDiagnostic.DestinationProtectionUnverified);
+        }
+        if (protection != BitLockerProtectionStatus.Protected)
         {
             throw new RecoveryUserException(
                 "Windows device encryption or BitLocker protection is not active. Enable it before recovering private data.",
@@ -96,46 +117,6 @@ internal static class PrivateRecoveryStore
     public static string FreshOutput(string parent)
     {
         return Path.Combine(parent, $"Recovery-{DateTime.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}");
-    }
-}
-
-internal static class BitLockerProtection
-{
-    public static bool IsEnabled(string drive)
-    {
-        var systemRoot = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
-        var executable = Path.Combine(systemRoot, "System32", "manage-bde.exe");
-        if (!File.Exists(executable))
-        {
-            return false;
-        }
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = executable,
-                ArgumentList = { "-status", drive, "-protectionaserrorlevel" },
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            });
-            if (process is null) return false;
-            process.OutputDataReceived += static (_, _) => { };
-            process.ErrorDataReceived += static (_, _) => { };
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            if (!process.WaitForExit(10_000))
-            {
-                process?.Kill(entireProcessTree: true);
-                return false;
-            }
-            return process.ExitCode == 0;
-        }
-        catch
-        {
-            return false;
-        }
     }
 }
 
@@ -202,7 +183,7 @@ internal sealed class RecoveryCoordinator
         }
 
         RecoveryDiagnostics.Record(RecoveryDiagnostic.PreflightStarted);
-        progress("Validating the completed encrypted backup…");
+        progress("Validating the completed encrypted backup.");
         JsonElement receipt;
         await using (var preflight = NativeHelperProcess.Start(helper, parent))
         {
@@ -224,7 +205,7 @@ internal sealed class RecoveryCoordinator
         RecoveryDiagnostics.Record(RecoveryDiagnostic.PreflightCompleted);
 
         RecoveryDiagnostics.Record(RecoveryDiagnostic.RecoveryStarted);
-        progress("Unlocking and recovering the encrypted backup…");
+        progress("Unlocking and recovering the encrypted backup.");
         await using var recovery = NativeHelperProcess.Start(helper, parent);
         var recoveryPayload = EncryptedIosPayload(
             backup, output, recovery.DestinationIdentity, receipt);
@@ -287,7 +268,7 @@ internal sealed class RecoveryCoordinator
                 RecoveryDiagnostic.BackupRejected);
         }
         RecoveryDiagnostics.Record(RecoveryDiagnostic.RecoveryStarted);
-        progress("Validating and recovering the selected private source…");
+        progress("Validating and recovering the selected private source.");
         await using var acquisition = NativeHelperProcess.Start(helper, parent);
         var hasSecret = sourceKind == "tvtime_official_export" && sourcePassword.Length > 0;
         var payload = new Dictionary<string, object?>
@@ -341,10 +322,10 @@ internal sealed class RecoveryCoordinator
                     var stage = root.GetProperty("payload").GetProperty("stage").GetString();
                     progress(stage switch
                     {
-                        "extraction" => "Copying selected TV Time files…",
-                        "analysis" => "Recovering readable history tables…",
-                        "report" => "Building private offline reports…",
-                        _ => "Validating private recovery state…",
+                        "extraction" => "Copying selected TV Time files.",
+                        "analysis" => "Recovering readable history tables.",
+                        "report" => "Building private offline reports.",
+                        _ => "Validating private recovery state.",
                     });
                 }
                 else if (type == "completed")

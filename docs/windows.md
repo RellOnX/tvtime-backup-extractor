@@ -120,3 +120,18 @@ Normal errors are sanitized; `--debug` is for a private terminal only.
 
 Never upload a backup, export, database, output tree, report, marker, screenshot, device ID, or
 debug trace. See the [privacy guide](privacy.md) and [output reference](output-reference.md).
+
+## Customized protection-verification candidate
+
+The `fix/bitlocker-status-verification` branch is a customized, unpublished candidate, not an
+upstream release. The app asks for consent before requesting Windows administrator access for
+only the built-in drive-protection status command. The app and recovery helper stay non-elevated.
+Only a completed, trackable protected result allows recovery. Denied permission, missing handles,
+query failures and timeouts refuse recovery; an uncertain query cannot automatically retry or
+later start recovery. No encryption settings are changed and no source password is sent to this
+status command. Source selection, private-output validation and other recovery safeguards remain.
+
+The synthetic test seam does not request UAC. A successful cloud package/launch test does not
+prove external elevation works from the installed MSIX with its existing runFullTrust capability.
+That installed-package validation remains required before this candidate is considered usable.
+No allowElevation capability has been added.
