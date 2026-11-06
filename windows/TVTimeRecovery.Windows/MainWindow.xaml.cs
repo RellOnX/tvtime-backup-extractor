@@ -142,6 +142,7 @@ public sealed partial class MainWindow : Window
         _cancellation = new CancellationTokenSource();
         var helperMayHaveStarted = false;
         var operation = _progressEpoch.Begin();
+        ShowPhaseProgress(new RecoveryProgress("Preparing private recovery."));
         try
         {
             var protectionConsent = new ContentDialog
@@ -179,7 +180,8 @@ public sealed partial class MainWindow : Window
                     if (!_progressEpoch.IsCurrent(operation)) return;
                     StatusBar.Severity = InfoBarSeverity.Informational;
                     StatusBar.Title = "Recovery in progress";
-                    StatusBar.Message = progress;
+                    StatusBar.Message = progress.Message;
+                    ShowPhaseProgress(progress);
                 }),
                 _cancellation.Token);
             _progressEpoch.End(operation);
@@ -218,6 +220,7 @@ public sealed partial class MainWindow : Window
         finally
         {
             _progressEpoch.End(operation);
+            RecoveryActivity.Visibility = Visibility.Collapsed;
             _cancellation?.Dispose();
             _cancellation = null;
             CancelButton.IsEnabled = false;
@@ -229,6 +232,13 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private void ShowPhaseProgress(RecoveryProgress progress)
+    {
+        RecoveryActivity.Visibility = Visibility.Visible;
+        RecoveryProgressBar.IsIndeterminate = !progress.IsDeterminate;
+        RecoveryProgressBar.Value = progress.PhasePercent;
+        RecoveryProgressText.Text = progress.DisplayText;
+    }
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         _progressEpoch.CancelCurrent();

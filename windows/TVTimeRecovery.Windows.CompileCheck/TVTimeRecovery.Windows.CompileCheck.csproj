@@ -39,5 +39,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="BitLockerProtectionTests.cs" />
     <Compile Include="HelperStartupTests.cs" />
+    <Compile Include="ReadyProgressTests.cs" />
+    <Compile Include="NativeReadyTests.cs" />
   </ItemGroup>
 </Project>

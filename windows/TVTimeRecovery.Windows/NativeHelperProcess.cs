@@ -37,6 +37,7 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
     private readonly FileStream _control;
     private readonly FileStream _secret;
     private readonly StreamReader _events;
+    private readonly HelperProtocolReader _protocol;
     private int _disposed;
 
     public DestinationIdentity DestinationIdentity { get; }
@@ -47,17 +48,20 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
         FileStream control,
         FileStream secret,
         StreamReader events,
-        DestinationIdentity destinationIdentity)
+        DestinationIdentity destinationIdentity, TimeSpan? readyTimeout)
     {
         _process = process;
         _job = job;
         _control = control;
         _secret = secret;
         _events = events;
+        _protocol = new HelperProtocolReader(events, () => _job.Dispose(), readyTimeout);
         DestinationIdentity = destinationIdentity;
     }
 
-    public static NativeHelperProcess Start(string executable, string destinationParent)
+    internal bool HasExited => WaitForSingleObject(_process, 0) == WaitObject0;
+
+    public static NativeHelperProcess Start(string executable, string destinationParent, TimeSpan? readyTimeout = null)
     {
         SafeFileHandle? controlRead = null;
         SafeFileHandle? controlWrite = null;
@@ -184,7 +188,7 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
             eventReader = new StreamReader(outputStream, new UTF8Encoding(false, true), false, 4096, leaveOpen: false);
             outputStream = null; // Owned by the reader after successful construction.
             var result = new NativeHelperProcess(
-                process, job, controlStream, secretStream, eventReader, destinationIdentity);
+                process, job, controlStream, secretStream, eventReader, destinationIdentity, readyTimeout);
             controlStream = null;
             secretStream = null;
             eventReader = null;
@@ -225,8 +229,25 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
         }
     }
 
+    public async Task WaitForReadyAsync(string lane, CancellationToken cancellationToken)
+    {
+        try { await _protocol.WaitForReadyAsync(lane, cancellationToken); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            await _protocol.ObserveFailedReadyReadAsync();
+            throw;
+        }
+        catch
+        {
+            await _protocol.ObserveFailedReadyReadAsync();
+            throw new RecoveryUserException(
+                "The private helper did not provide a compatible ready response in time. No recovery request or password was sent.",
+                RecoveryDiagnostic.LocalHelperError);
+        }
+    }
     public async Task SendControlAsync(byte[] payload, CancellationToken cancellationToken)
     {
+        _protocol.RequireReady();
         if (payload.Length is <= 0 or > 1_048_576) throw new InvalidDataException();
         var header = new byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(header, (uint)payload.Length);
@@ -237,6 +258,7 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
 
     public async Task SendSecretAsync(string password, CancellationToken cancellationToken)
     {
+        _protocol.RequireReady();
         var payload = Encoding.UTF8.GetBytes(password);
         try
         {
@@ -254,16 +276,8 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
         }
     }
 
-    public async IAsyncEnumerable<JsonDocument> EventsAsync(
-        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-    {
-        while (true)
-        {
-            var line = await ReadBoundedLineAsync(cancellationToken);
-            if (line is null) yield break;
-            yield return JsonDocument.Parse(line, new JsonDocumentOptions { MaxDepth = 32 });
-        }
-    }
+    public IAsyncEnumerable<JsonDocument> EventsAsync(CancellationToken cancellationToken) =>
+        _protocol.EventsAsync(cancellationToken);
 
     public async Task CancelAsync()
     {
@@ -275,23 +289,6 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
         });
         try { await SendControlAsync(payload, CancellationToken.None); }
         catch (Exception) { }
-    }
-
-    private async Task<string?> ReadBoundedLineAsync(CancellationToken cancellationToken)
-    {
-        const int maximumBytes = 1_048_576;
-        const int maximumCharacters = maximumBytes / 4;
-        var line = new StringBuilder();
-        var one = new char[1];
-        while (true)
-        {
-            var read = await _events.ReadAsync(one.AsMemory(), cancellationToken);
-            if (read == 0) return line.Length == 0 ? null : throw new InvalidDataException();
-            if (one[0] == '\n') return line.ToString();
-            if (one[0] == '\r') continue;
-            line.Append(one[0]);
-            if (line.Length > maximumCharacters) throw new InvalidDataException();
-        }
     }
 
     public async Task WaitForSuccessfulExitAsync()

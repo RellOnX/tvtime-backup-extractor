@@ -9,11 +9,15 @@ internal static class CompileCheckProgram
     private static readonly UTF8Encoding Utf8WithoutBom = new(false, true);
     public static int Main()
     {
+        var fixtureResult = NativeReadyTests.TryRunFixture();
+        if (fixtureResult.HasValue) return fixtureResult.Value;
         var temporaryRoot = Path.Combine(
             Path.GetTempPath(), $"tvtime-windows-validator-{Guid.NewGuid():N}");
         Directory.CreateDirectory(temporaryRoot);
         try
         {
+            ReadyProgressTests.RunAsync().GetAwaiter().GetResult();
+            NativeReadyTests.RunAsync(temporaryRoot).GetAwaiter().GetResult();
             HelperStartupTests.Run();
             BitLockerProtectionTests.RunAsync().GetAwaiter().GetResult();
             RequireArtifactContractLimits();

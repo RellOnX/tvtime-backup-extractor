@@ -2,7 +2,7 @@ name: Windows alpha package
 
 on:
   push:
-    branches: [fix/helper-startup-status]
+    branches: [fix/progress-ready-deadline]
   pull_request:
     paths:
       - ".github/workflows/windows-alpha.yml"

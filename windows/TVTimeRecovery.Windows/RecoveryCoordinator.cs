@@ -129,7 +129,7 @@ internal sealed class RecoveryCoordinator
         string backup,
         string output,
         string password,
-        Action<string> progress,
+        Action<RecoveryProgress> progress,
         CancellationToken cancellationToken)
     {
         if (sourceKind is not (
@@ -172,7 +172,7 @@ internal sealed class RecoveryCoordinator
         string output,
         string parent,
         string password,
-        Action<string> progress,
+        Action<RecoveryProgress> progress,
         CancellationToken cancellationToken)
     {
         if (password.Length == 0)
@@ -183,10 +183,12 @@ internal sealed class RecoveryCoordinator
         }
 
         RecoveryDiagnostics.Record(RecoveryDiagnostic.PreflightStarted);
-        progress("Validating the completed encrypted backup.");
+        progress(new RecoveryProgress("Starting the private validation helper."));
         JsonElement receipt;
         await using (var preflight = NativeHelperProcess.Start(helper, parent))
         {
+            await preflight.WaitForReadyAsync("preflight", cancellationToken);
+            progress(new RecoveryProgress("Validating the completed encrypted backup."));
             var payload = EncryptedIosPayload(
                 backup, output, preflight.DestinationIdentity, receipt: null);
             await preflight.SendControlAsync(
@@ -205,8 +207,10 @@ internal sealed class RecoveryCoordinator
         RecoveryDiagnostics.Record(RecoveryDiagnostic.PreflightCompleted);
 
         RecoveryDiagnostics.Record(RecoveryDiagnostic.RecoveryStarted);
-        progress("Unlocking and recovering the encrypted backup.");
+        progress(new RecoveryProgress("Starting the private recovery helper."));
         await using var recovery = NativeHelperProcess.Start(helper, parent);
+        await recovery.WaitForReadyAsync("recover", cancellationToken);
+        progress(new RecoveryProgress("Unlocking and recovering the encrypted backup."));
         var recoveryPayload = EncryptedIosPayload(
             backup, output, recovery.DestinationIdentity, receipt);
         await recovery.SendControlAsync(
@@ -257,7 +261,7 @@ internal sealed class RecoveryCoordinator
         string output,
         string parent,
         string sourcePassword,
-        Action<string> progress,
+        Action<RecoveryProgress> progress,
         CancellationToken cancellationToken)
     {
         if (sourceKind is not (
@@ -268,8 +272,10 @@ internal sealed class RecoveryCoordinator
                 RecoveryDiagnostic.BackupRejected);
         }
         RecoveryDiagnostics.Record(RecoveryDiagnostic.RecoveryStarted);
-        progress("Validating and recovering the selected private source.");
+        progress(new RecoveryProgress("Starting the private acquisition helper."));
         await using var acquisition = NativeHelperProcess.Start(helper, parent);
+        await acquisition.WaitForReadyAsync("acquire", cancellationToken);
+        progress(new RecoveryProgress("Validating and recovering the selected private source."));
         var hasSecret = sourceKind == "tvtime_official_export" && sourcePassword.Length > 0;
         var payload = new Dictionary<string, object?>
         {
@@ -298,35 +304,20 @@ internal sealed class RecoveryCoordinator
 
     private static async Task<JsonElement> ReadToCompletionAsync(
         NativeHelperProcess helper,
-        Action<string> progress,
+        Action<RecoveryProgress> progress,
         CancellationToken cancellationToken)
     {
         using var cancellationRegistration = cancellationToken.Register(
             static state => _ = ((NativeHelperProcess)state!).CancelAsync(), helper);
-        var expectedSequence = 1;
         await foreach (var document in helper.EventsAsync(cancellationToken))
         {
             using (document)
             {
                 var root = document.RootElement;
-                if (root.GetProperty("protocolVersion").GetInt32() != ProtocolVersion ||
-                    root.GetProperty("sequence").GetInt32() != expectedSequence++)
-                {
-                    throw new RecoveryUserException(
-                        "The app and private helper protocol did not match.",
-                        RecoveryDiagnostic.LocalHelperError);
-                }
                 var type = root.GetProperty("type").GetString();
                 if (type == "progress")
                 {
-                    var stage = root.GetProperty("payload").GetProperty("stage").GetString();
-                    progress(stage switch
-                    {
-                        "extraction" => "Copying selected TV Time files.",
-                        "analysis" => "Recovering readable history tables.",
-                        "report" => "Building private offline reports.",
-                        _ => "Validating private recovery state.",
-                    });
+                    progress(RecoveryProgress.FromPayload(root.GetProperty("payload")));
                 }
                 else if (type == "completed")
                 {

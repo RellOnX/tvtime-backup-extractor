@@ -16,6 +16,7 @@
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
 
       <TextBlock Grid.Row="0" Text="Recover your TV Time history" Style="{StaticResource TitleTextBlockStyle}" />
@@ -40,11 +41,16 @@
         <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click" IsEnabled="false" />
       </StackPanel>
 
-      <InfoBar Grid.Row="8" x:Name="StatusBar" Margin="0,24,0,0" IsOpen="true"
+      <StackPanel Grid.Row="8" x:Name="RecoveryActivity" Margin="0,20,0,0" Spacing="8" Visibility="Collapsed">
+        <ProgressBar x:Name="RecoveryProgressBar" Minimum="0" Maximum="100" IsIndeterminate="true"
+          AutomationProperties.Name="Current recovery phase activity" />
+        <TextBlock x:Name="RecoveryProgressText" TextWrapping="Wrap" />
+      </StackPanel>
+      <InfoBar Grid.Row="9" x:Name="StatusBar" Margin="0,24,0,0" IsOpen="true"
         Severity="Informational" Title="Ready"
         Message="Your phone and backup are not modified. Keep the private report out of synced folders." />
 
-      <StackPanel Grid.Row="9" x:Name="ResultActions" Margin="0,20,0,0" Spacing="10" Visibility="Collapsed">
+      <StackPanel Grid.Row="10" x:Name="ResultActions" Margin="0,20,0,0" Spacing="10" Visibility="Collapsed">
         <TextBlock TextWrapping="Wrap"
           Text="Opening a private report can add its filename to browser or viewer history and Windows Recent Items." />
         <StackPanel Orientation="Horizontal" Spacing="10">

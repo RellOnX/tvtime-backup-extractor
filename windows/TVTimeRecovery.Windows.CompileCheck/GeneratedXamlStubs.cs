@@ -20,6 +20,9 @@ public sealed partial class MainWindow
     private readonly PasswordBox BackupPassword = new();
     private readonly CheckBox SensitiveConfirmation = new();
     private readonly InfoBar StatusBar = new();
+    private readonly StackPanel RecoveryActivity = new();
+    private readonly ProgressBar RecoveryProgressBar = new();
+    private readonly TextBlock RecoveryProgressText = new();
     private readonly StackPanel ResultActions = new();
 
     private void InitializeComponent() { }
