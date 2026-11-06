@@ -1,0 +1,82 @@
+name: Isolated native launcher tests
+
+on:
+  push:
+    branches:
+      - test/helper-protocol-faults
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    name: Launcher with harmless synthetic peer
+    if: github.repository == 'RellOnX/tvtime-backup-extractor' && github.ref == 'refs/heads/test/helper-protocol-faults'
+    runs-on: windows-2022
+    timeout-minutes: 8
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+      DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE: "true"
+      NUGET_XMLDOC_MODE: skip
+    steps:
+      - name: Check out test source without persisted credentials
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Stage reviewed source and select preinstalled tools
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $sdk = @(dotnet --list-sdks | ForEach-Object {
+            if ($_ -match '^(8\.0\.\d+) \[') { $Matches[1] }
+          } | Sort-Object { [version]$_ } -Descending | Select-Object -First 1)
+          if ($LASTEXITCODE -ne 0 -or $sdk.Count -ne 1) {
+            throw "A preinstalled .NET 8 SDK is required. No tools will be installed."
+          }
+          $runtimes = @(dotnet --list-runtimes)
+          if ($LASTEXITCODE -ne 0 -or -not ($runtimes -match '^Microsoft.NETCore.App 8\.0\.\d+ ')) {
+            throw "A preinstalled .NET 8 runtime is required. No tools will be installed."
+          }
+          Write-Output ("PREINSTALLED_SDK " + $sdk[0])
+          $runtimes | Where-Object { $_ -match '^Microsoft.NETCore.App 8\.0\.\d+ ' } |
+            ForEach-Object { Write-Output ("PREINSTALLED_RUNTIME " + ($_ -replace ' \[.*$', '')) }
+          $stage = Join-Path $env:RUNNER_TEMP "synthetic-launcher-contracts"
+          if (Test-Path -LiteralPath $stage) { throw "The isolated test folder must be fresh." }
+          Copy-Item -LiteralPath .\tests\LauncherContractHarness -Destination $stage -Recurse
+          $source = ".\windows\TVTimeRecovery.Windows\NativeHelperProcess.cs"
+          $blob = (git hash-object -- $source).Trim()
+          if ($LASTEXITCODE -ne 0 -or $blob -cne "d64ace7e0c2e7b454a36206297e4ca959feaeba7") {
+            throw "The native launcher source is not the reviewed commit's exact blob."
+          }
+          New-Item -ItemType Directory -Path (Join-Path $stage "Source") | Out-Null
+          Copy-Item -LiteralPath $source -Destination (Join-Path $stage "Source\NativeHelperProcess.cs")
+          @{ sdk = @{ version = $sdk[0]; rollForward = "disable"; allowPrerelease = $false } } |
+            ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stage "global.json") -Encoding UTF8
+      - name: Build only the dependency-free test programs
+        shell: powershell
+        timeout-minutes: 2
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $stage = Join-Path $env:RUNNER_TEMP "synthetic-launcher-contracts"
+          Set-Location -LiteralPath $stage
+          foreach ($project in @("Peer\SyntheticProtocolPeer.csproj", "Harness\Harness.csproj")) {
+            dotnet restore $project --configfile .\NuGet.Config --ignore-failed-sources
+            if ($LASTEXITCODE -ne 0) { throw "Offline test-project restore failed. No package source is allowed." }
+            dotnet build $project --configuration Release --no-restore
+            if ($LASTEXITCODE -ne 0) { throw "Synthetic test-project compilation failed." }
+          }
+      - name: Run bounded launcher fault tests
+        shell: powershell
+        timeout-minutes: 3
+        run: |
+          $ErrorActionPreference = "Stop"
+          Set-StrictMode -Version Latest
+          $stage = Join-Path $env:RUNNER_TEMP "synthetic-launcher-contracts"
+          Set-Location -LiteralPath $stage
+          $peer = Join-Path $stage "Peer\bin\Release\net8.0\SyntheticProtocolPeer.exe"
+          dotnet .\Harness\bin\Release\net8.0\Harness.dll $peer
+          if ($LASTEXITCODE -ne 0) { throw "Synthetic launcher validation failed. See fixed test labels above." }
