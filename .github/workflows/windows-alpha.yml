@@ -2,7 +2,7 @@ name: Windows alpha package
 
 on:
   push:
-    branches: [fix/safe-helper-failure-phase]
+    branches: [fix/windows-encrypted-copy-verification]
   pull_request:
     paths:
       - ".github/workflows/windows-alpha.yml"
@@ -44,6 +44,30 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.13.12"
+      - name: Test pinned Windows encrypted-copy integrity and handle compatibility
+        shell: powershell
+        run: |
+          $testRoot = Join-Path $env:RUNNER_TEMP "encrypted-copy-test-environment"
+          if (Test-Path -LiteralPath $testRoot) { throw "The Python test environment must be fresh." }
+          python -m venv $testRoot
+          if ($LASTEXITCODE -ne 0) { throw "The pinned Python test environment failed." }
+          $testPython = Join-Path $testRoot "Scripts\python.exe"
+          & $testPython -c "import sys; assert sys.version_info[:3] == (3, 13, 12)"
+          if ($LASTEXITCODE -ne 0) { throw "The Python test runtime differs from the pinned version." }
+          & $testPython -m pip install --require-hashes --only-binary=:all: --requirement requirements.lock --requirement requirements-dev.lock
+          if ($LASTEXITCODE -ne 0) { throw "The hash-locked Python test dependencies failed." }
+          & $testPython -m pip check
+          if ($LASTEXITCODE -ne 0) { throw "The Python test dependency graph failed." }
+          $env:PYTHONWARNINGS = "error::ResourceWarning"
+          & $testPython -m unittest -v tests.test_windows_encrypted_copy_verification
+          if ($LASTEXITCODE -ne 0) { throw "Encrypted-copy native handle or integrity tests failed; packaging is blocked." }
+          & $testPython -m unittest -v tests.test_safety_windows tests.test_windows_native
+          if ($LASTEXITCODE -ne 0) { throw "Existing native Windows filesystem safety tests failed; packaging is blocked." }
+          $env:RUFF_CACHE_DIR = Join-Path $env:RUNNER_TEMP "encrypted-copy-ruff-cache"
+          & $testPython -m ruff check tvtime_extractor/extract.py tests/test_windows_encrypted_copy_verification.py
+          if ($LASTEXITCODE -ne 0) { throw "The targeted Python lint gate failed." }
+          & $testPython -m ruff format --check tvtime_extractor/extract.py tests/test_windows_encrypted_copy_verification.py
+          if ($LASTEXITCODE -ne 0) { throw "The targeted Python format gate failed." }
       - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:

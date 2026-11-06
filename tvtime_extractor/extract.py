@@ -240,12 +240,23 @@ def _source_payload_state(
 ) -> BackupFileSnapshot:
     """Hash/copy one source payload through a stable, descriptor-rooted no-follow chain."""
 
-    if os.name == "nt" and source_root_descriptor is not None:
-        snapshot, _payload = _windows_source_payload(
-            path,
-            source_root_handle=source_root_descriptor,
-            snapshot_destination=snapshot_destination,
-        )
+    if os.name == "nt":
+        if source_root_descriptor is None:
+            # Private encrypted copies also need the native pinned-file path. Do not
+            # compare path lstat() with CRT fstat(): their Windows ctime meanings differ.
+            absolute = path.absolute()  # Anchor lexically; never resolve/follow links.
+            with _windows_pinned_absolute_directory_handle(absolute.parent) as parent:
+                snapshot, _payload = _windows_source_payload(
+                    Path(absolute.name),
+                    source_root_handle=parent,
+                    snapshot_destination=snapshot_destination,
+                )
+        else:
+            snapshot, _payload = _windows_source_payload(
+                path,
+                source_root_handle=source_root_descriptor,
+                snapshot_destination=snapshot_destination,
+            )
         return snapshot
 
     parent_descriptor = -1
