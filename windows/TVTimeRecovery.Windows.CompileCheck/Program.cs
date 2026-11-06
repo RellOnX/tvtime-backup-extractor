@@ -14,6 +14,7 @@ internal static class CompileCheckProgram
         Directory.CreateDirectory(temporaryRoot);
         try
         {
+            HelperStartupTests.Run();
             BitLockerProtectionTests.RunAsync().GetAwaiter().GetResult();
             RequireArtifactContractLimits();
             var output = CreateValidOutput(temporaryRoot);

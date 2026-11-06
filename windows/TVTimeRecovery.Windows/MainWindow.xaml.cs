@@ -17,6 +17,7 @@ public sealed partial class MainWindow : Window
     private ValidatedRecoveryOutput? _completedOutput;
     private bool _closePending;
     private bool _allowClose;
+    private readonly RecoveryProgressEpoch _progressEpoch = new();
 
     public MainWindow()
     {
@@ -37,6 +38,7 @@ public sealed partial class MainWindow : Window
         args.Cancel = true;
         if (_closePending) return;
         _closePending = true;
+        _progressEpoch.CancelCurrent();
         _cancellation?.Cancel();
         try
         {
@@ -139,6 +141,7 @@ public sealed partial class MainWindow : Window
         ResultActions.Visibility = Visibility.Collapsed;
         _cancellation = new CancellationTokenSource();
         var helperMayHaveStarted = false;
+        var operation = _progressEpoch.Begin();
         try
         {
             var protectionConsent = new ContentDialog
@@ -173,11 +176,13 @@ public sealed partial class MainWindow : Window
                 password,
                 progress => DispatcherQueue.TryEnqueue(() =>
                 {
+                    if (!_progressEpoch.IsCurrent(operation)) return;
                     StatusBar.Severity = InfoBarSeverity.Informational;
                     StatusBar.Title = "Recovery in progress";
                     StatusBar.Message = progress;
                 }),
                 _cancellation.Token);
+            _progressEpoch.End(operation);
             ResultActions.Visibility = Visibility.Visible;
             StatusBar.Severity = InfoBarSeverity.Success;
             StatusBar.Title = "Recovery complete";
@@ -186,6 +191,7 @@ public sealed partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            _progressEpoch.End(operation);
             StatusBar.Severity = InfoBarSeverity.Warning;
             StatusBar.Title = "Recovery cancelled";
             StatusBar.Message = helperMayHaveStarted
@@ -195,6 +201,7 @@ public sealed partial class MainWindow : Window
         }
         catch (RecoveryUserException error)
         {
+            _progressEpoch.End(operation);
             StatusBar.Severity = InfoBarSeverity.Error;
             StatusBar.Title = "Recovery stopped safely";
             StatusBar.Message = error.SafeMessage;
@@ -202,6 +209,7 @@ public sealed partial class MainWindow : Window
         }
         catch
         {
+            _progressEpoch.End(operation);
             StatusBar.Severity = InfoBarSeverity.Error;
             StatusBar.Title = "Recovery stopped safely";
             StatusBar.Message = "No completed report was accepted. The source backup was not intentionally modified.";
@@ -209,6 +217,7 @@ public sealed partial class MainWindow : Window
         }
         finally
         {
+            _progressEpoch.End(operation);
             _cancellation?.Dispose();
             _cancellation = null;
             CancelButton.IsEnabled = false;
@@ -222,6 +231,7 @@ public sealed partial class MainWindow : Window
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
+        _progressEpoch.CancelCurrent();
         _cancellation?.Cancel();
     }
 

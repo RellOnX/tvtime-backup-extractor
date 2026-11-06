@@ -69,6 +69,10 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
         SafeFileHandle? nullHandle = null;
         SafeFileHandle? process = null;
         SafeFileHandle? job = null;
+        FileStream? controlStream = null;
+        FileStream? secretStream = null;
+        FileStream? outputStream = null;
+        StreamReader? eventReader = null;
         IntPtr attributeList = IntPtr.Zero;
         IntPtr handleList = IntPtr.Zero;
         IntPtr environment = IntPtr.Zero;
@@ -170,21 +174,30 @@ internal sealed class NativeHelperProcess : IAsyncDisposable
             nullHandle.Dispose();
             nullHandle = null;
 
-            var control = new FileStream(controlWrite!, FileAccess.Write, 4096, isAsync: true);
+            // CreatePipe handles are synchronous. Async FileStream methods still support this mode.
+            controlStream = new FileStream(controlWrite!, FileAccess.Write, 4096, isAsync: false);
             controlWrite = null;
-            var secret = new FileStream(secretWrite!, FileAccess.Write, 4096, isAsync: true);
+            secretStream = new FileStream(secretWrite!, FileAccess.Write, 4096, isAsync: false);
             secretWrite = null;
-            var output = new FileStream(outputRead!, FileAccess.Read, 4096, isAsync: true);
+            outputStream = new FileStream(outputRead!, FileAccess.Read, 4096, isAsync: false);
             outputRead = null;
-            var reader = new StreamReader(output, new UTF8Encoding(false, true), false, 4096, leaveOpen: false);
+            eventReader = new StreamReader(outputStream, new UTF8Encoding(false, true), false, 4096, leaveOpen: false);
+            outputStream = null; // Owned by the reader after successful construction.
             var result = new NativeHelperProcess(
-                process, job, control, secret, reader, destinationIdentity);
+                process, job, controlStream, secretStream, eventReader, destinationIdentity);
+            controlStream = null;
+            secretStream = null;
+            eventReader = null;
             process = null;
             job = null;
             return result;
         }
         finally
         {
+            eventReader?.Dispose();
+            outputStream?.Dispose();
+            secretStream?.Dispose();
+            controlStream?.Dispose();
             controlRead?.Dispose();
             controlWrite?.Dispose();
             outputRead?.Dispose();

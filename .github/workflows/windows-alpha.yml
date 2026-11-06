@@ -2,7 +2,7 @@ name: Windows alpha package
 
 on:
   push:
-    branches: [fix/bitlocker-status-verification]
+    branches: [fix/helper-startup-status]
   pull_request:
     paths:
       - ".github/workflows/windows-alpha.yml"
@@ -33,6 +33,7 @@ jobs:
   package:
     name: Build, install, and launch Windows x64 alpha
     runs-on: windows-2022
+    timeout-minutes: 20
     steps:
       - name: Check out the exact candidate
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -47,6 +48,15 @@ jobs:
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
         with:
           dotnet-version: "8.0.423"
+      - name: Run isolated pipe and queued-status contract tests
+        shell: powershell
+        run: |
+          dotnet restore tests/StartupContractHarness/StartupContractHarness.csproj --configfile tests/StartupContractHarness/NuGet.Config
+          if ($LASTEXITCODE -ne 0) { throw "Isolated harness restore failed." }
+          dotnet build tests/StartupContractHarness/StartupContractHarness.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "Isolated harness build failed." }
+          dotnet --fx-version 8.0.29 --roll-forward Disable tests/StartupContractHarness/bin/Release/net8.0/StartupContractHarness.dll
+          if ($LASTEXITCODE -ne 0) { throw "Isolated pipe or queued-status tests failed." }
       - name: Run synthetic protection and native-validator tests
         shell: powershell
         run: |

@@ -135,3 +135,17 @@ The synthetic test seam does not request UAC. A successful cloud package/launch 
 prove external elevation works from the installed MSIX with its existing runFullTrust capability.
 That installed-package validation remains required before this candidate is considered usable.
 No allowElevation capability has been added.
+## Customized helper startup/status correction
+
+The separate `fix/helper-startup-status` candidate corrects synchronous anonymous-pipe stream mode
+and prevents queued progress from overwriting terminal states or a later operation. It preserves
+the existing inherited-handle whitelist and kill-on-close Job Object. Partially constructed stream
+wrappers are disposed if startup fails. Async APIs remain in use over synchronous handles.
+
+The package build runs both the isolated .NET 8.0.29 pipe/status models and CompileCheck tests of
+the production progress epoch and corrected pipe mode before packaging. These tests use invented
+bytes and do not open a backup or start the recovery helper. The package launch smoke only verifies
+that the app opens and remains responsive; it does not prove actual helper startup, handshake,
+child inheritance, malformed-event handling, or cancellation/disposal across a child process.
+EventsAsync still lacks a startup/inactivity watchdog. Those remaining gates need synthetic
+installed-package validation before any claim that real recovery is fixed.
