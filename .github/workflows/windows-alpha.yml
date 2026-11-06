@@ -51,11 +51,15 @@ jobs:
       - name: Run isolated pipe and queued-status contract tests
         shell: powershell
         run: |
-          dotnet restore tests/StartupContractHarness/StartupContractHarness.csproj --configfile tests/StartupContractHarness/NuGet.Config
+          $harness = Join-Path $env:RUNNER_TEMP "isolated-startup-contracts"
+          if (Test-Path -LiteralPath $harness) { throw "The isolated test destination must be fresh." }
+          Copy-Item -LiteralPath .\tests\StartupContractHarness -Destination $harness -Recurse
+          $project = Join-Path $harness "StartupContractHarness.csproj"
+          dotnet restore $project --configfile (Join-Path $harness "NuGet.Config")
           if ($LASTEXITCODE -ne 0) { throw "Isolated harness restore failed." }
-          dotnet build tests/StartupContractHarness/StartupContractHarness.csproj --configuration Release --no-restore
+          dotnet build $project --configuration Release --no-restore
           if ($LASTEXITCODE -ne 0) { throw "Isolated harness build failed." }
-          dotnet --fx-version 8.0.29 --roll-forward Disable tests/StartupContractHarness/bin/Release/net8.0/StartupContractHarness.dll
+          dotnet --fx-version 8.0.29 --roll-forward Disable (Join-Path $harness "bin\Release\net8.0\StartupContractHarness.dll")
           if ($LASTEXITCODE -ne 0) { throw "Isolated pipe or queued-status tests failed." }
       - name: Run synthetic protection and native-validator tests
         shell: powershell
