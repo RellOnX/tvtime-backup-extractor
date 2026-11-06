@@ -1,0 +1,55 @@
+name: Isolated startup contract tests
+
+on:
+  push:
+    branches:
+      - test/helper-transport-ui
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic:
+    name: Independent pipe and queued-status tests
+    if: github.repository == 'RellOnX/tvtime-backup-extractor' && github.ref == 'refs/heads/test/helper-transport-ui'
+    runs-on: windows-2022
+    timeout-minutes: 5
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - name: Check out only this exact test commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Set up the pinned official .NET SDK
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d
+        with:
+          dotnet-version: "8.0.423"
+      - name: Verify exact SDK and runtime are available
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ((dotnet --version).Trim() -ne "8.0.423") { throw "Pinned SDK unavailable." }
+          if (-not (dotnet --list-runtimes | Select-String '^Microsoft\.NETCore\.App 8\.0\.29 \[')) {
+            throw "Pinned runtime unavailable."
+          }
+          git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { throw "Commit inspection failed." }
+      - name: Restore only the dependency-free harness with no package sources
+        shell: pwsh
+        run: |
+          dotnet restore tests/StartupContractHarness/StartupContractHarness.csproj --configfile tests/StartupContractHarness/NuGet.Config
+          if ($LASTEXITCODE -ne 0) { throw "Harness restore failed." }
+      - name: Build only the independent harness
+        shell: pwsh
+        run: |
+          dotnet build tests/StartupContractHarness/StartupContractHarness.csproj --configuration Release --no-restore
+          if ($LASTEXITCODE -ne 0) { throw "Harness build failed." }
+      - name: Run only synthetic in-process checks
+        shell: pwsh
+        run: |
+          dotnet --fx-version 8.0.29 --roll-forward Disable tests/StartupContractHarness/bin/Release/net8.0/StartupContractHarness.dll
+          if ($LASTEXITCODE -ne 0) { throw "Synthetic checks failed." }
