@@ -7,13 +7,136 @@ import unittest
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from tvtime_extractor import extract, safety
 from tvtime_extractor.errors import SourceChangedError, UnsafePathError
 
 
+@contextmanager
+def active_synthetic_output(path: Path):
+    state = SimpleNamespace(visible_root=path)
+    token = safety._WINDOWS_BOUND_OUTPUT_STATE.set(state)
+    try:
+        yield state
+    finally:
+        safety._WINDOWS_BOUND_OUTPUT_STATE.reset(token)
+
+
+class BorrowedOutputBindingTests(unittest.TestCase):
+    def test_borrows_live_exact_handle_and_revalidates_without_closing_it(self) -> None:
+        path = Path("synthetic-output").absolute()
+        binding = (path, 71, (17, 23))
+        with (
+            active_synthetic_output(path),
+            mock.patch.object(
+                safety, "_windows_bound_directory_binding", return_value=binding
+            ) as check,
+            mock.patch.object(safety, "_windows_pinned_absolute_directory_handle") as reopen,
+            mock.patch.object(safety, "_windows_close_handle") as close,
+        ):
+            with safety._windows_borrow_or_pin_directory_handle(path) as handle:
+                self.assertEqual(handle, 71)
+            self.assertEqual(check.call_count, 2)
+            reopen.assert_not_called()
+            close.assert_not_called()
+
+    def test_changed_or_removed_binding_refuses_without_fallback(self) -> None:
+        path = Path("synthetic-output").absolute()
+        binding = (path, 71, (17, 23))
+        for after in (None, (path, 72, (17, 23)), (path, 71, (17, 24))):
+            with (
+                self.subTest(after=after),
+                active_synthetic_output(path),
+                mock.patch.object(
+                    safety, "_windows_bound_directory_binding", side_effect=[binding, after]
+                ),
+                mock.patch.object(safety, "_windows_pinned_absolute_directory_handle") as reopen,
+                mock.patch.object(safety, "_windows_close_handle") as close,
+            ):
+                with (
+                    self.assertRaises(UnsafePathError),
+                    safety._windows_borrow_or_pin_directory_handle(path),
+                ):
+                    pass
+                reopen.assert_not_called()
+                close.assert_not_called()
+
+    def test_missing_parent_inside_active_output_refuses_before_reopen(self) -> None:
+        root = Path("synthetic-output").absolute()
+        with (
+            active_synthetic_output(root),
+            mock.patch.object(safety, "_windows_bound_directory_binding", return_value=None),
+            mock.patch.object(safety, "_windows_pinned_absolute_directory_handle") as reopen,
+            self.assertRaises(UnsafePathError),
+            safety._windows_borrow_or_pin_directory_handle(
+                root / "unretained", require_bound_within_output=True
+            ),
+        ):
+            pass
+        reopen.assert_not_called()
+
+    def test_unbound_parent_still_uses_owned_absolute_pin(self) -> None:
+        path = Path("synthetic-unbound").absolute()
+        with (
+            mock.patch.object(safety, "_windows_bound_directory_binding", return_value=None),
+            mock.patch.object(safety, "_windows_pinned_absolute_directory_handle") as pin,
+        ):
+            pin.return_value.__enter__.return_value = 71
+            with safety._windows_borrow_or_pin_directory_handle(path) as handle:
+                self.assertEqual(handle, 71)
+        pin.assert_called_once_with(path)
+        pin.return_value.__exit__.assert_called_once()
+
+    def test_caller_failure_does_not_close_borrowed_handle(self) -> None:
+        path = Path("synthetic-output").absolute()
+        with (
+            active_synthetic_output(path),
+            mock.patch.object(
+                safety, "_windows_bound_directory_binding", return_value=(path, 71, (17, 23))
+            ),
+            mock.patch.object(safety, "_windows_close_handle") as close,
+            self.assertRaisesRegex(RuntimeError, "synthetic caller failure"),
+            safety._windows_borrow_or_pin_directory_handle(path),
+        ):
+            raise RuntimeError("synthetic caller failure")
+        close.assert_not_called()
+
+    def test_changed_output_context_refuses_even_with_same_numeric_binding(self) -> None:
+        path = Path("synthetic-output").absolute()
+        changed_token = None
+        with (
+            active_synthetic_output(path),
+            mock.patch.object(
+                safety, "_windows_bound_directory_binding", return_value=(path, 71, (17, 23))
+            ),
+        ):
+            try:
+                with (
+                    self.assertRaises(UnsafePathError),
+                    safety._windows_borrow_or_pin_directory_handle(path),
+                ):
+                    changed_token = safety._WINDOWS_BOUND_OUTPUT_STATE.set(
+                        SimpleNamespace(visible_root=path)
+                    )
+            finally:
+                if changed_token is not None:
+                    safety._WINDOWS_BOUND_OUTPUT_STATE.reset(changed_token)
+
+
 class WindowsEncryptedCopyRoutingTests(unittest.TestCase):
+    def test_lexical_parent_traversal_refuses_before_binding_lookup(self) -> None:
+        windows_os = mock.Mock(wraps=os)
+        windows_os.name = "nt"
+        with (
+            mock.patch.object(extract, "os", windows_os),
+            mock.patch.object(extract, "_windows_borrow_or_pin_directory_handle") as borrow,
+            self.assertRaises(UnsafePathError),
+        ):
+            extract._source_payload_state(Path("synthetic-output") / ".." / "encrypted.bin")
+        borrow.assert_not_called()
+
     def test_private_copy_uses_pinned_native_reader_without_mixed_stat_apis(self) -> None:
         payload = b"synthetic encrypted bytes"
         native = safety._WindowsRegularFileInformation(
@@ -40,14 +163,14 @@ class WindowsEncryptedCopyRoutingTests(unittest.TestCase):
             mock.patch.object(
                 extract, "_same_source_metadata", side_effect=AssertionError("No mixed ctime")
             ),
-            mock.patch.object(extract, "_windows_pinned_absolute_directory_handle") as parent_pin,
+            mock.patch.object(extract, "_windows_borrow_or_pin_directory_handle") as parent_pin,
             mock.patch.object(
                 extract, "_windows_locked_relative_regular_file_descriptor", side_effect=pinned_file
             ) as file_pin,
         ):
             parent_pin.return_value.__enter__.return_value = 71
             result = extract._source_payload_state(path)
-        parent_pin.assert_called_once_with(path.absolute().parent)
+        parent_pin.assert_called_once_with(path.absolute().parent, require_bound_within_output=True)
         file_pin.assert_called_once_with(71, ("encrypted.bin",))
         self.assertEqual((result.device, result.inode), native.identity)
         self.assertEqual(result.size, len(payload))
@@ -60,7 +183,7 @@ class WindowsEncryptedCopyRoutingTests(unittest.TestCase):
         windows_os.name = "nt"
         with (
             mock.patch.object(extract, "os", windows_os),
-            mock.patch.object(extract, "_windows_pinned_absolute_directory_handle") as parent_pin,
+            mock.patch.object(extract, "_windows_borrow_or_pin_directory_handle") as parent_pin,
             mock.patch.object(
                 extract, "_windows_source_payload", return_value=("synthetic-result", None)
             ) as reader,
@@ -79,7 +202,7 @@ class WindowsEncryptedCopyRoutingTests(unittest.TestCase):
             mock.patch.object(extract, "os", windows_os),
             mock.patch.object(
                 extract,
-                "_windows_pinned_absolute_directory_handle",
+                "_windows_borrow_or_pin_directory_handle",
                 side_effect=UnsafePathError("synthetic rejected ancestor"),
             ),
             mock.patch.object(extract, "_windows_source_payload") as reader,
@@ -99,7 +222,7 @@ class WindowsEncryptedCopyRoutingTests(unittest.TestCase):
 
         with (
             mock.patch.object(extract, "os", windows_os),
-            mock.patch.object(extract, "_windows_pinned_absolute_directory_handle") as parent_pin,
+            mock.patch.object(extract, "_windows_borrow_or_pin_directory_handle") as parent_pin,
             mock.patch.object(
                 extract, "_windows_locked_relative_regular_file_descriptor", side_effect=short_file
             ),

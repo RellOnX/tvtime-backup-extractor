@@ -64,9 +64,9 @@ jobs:
           & $testPython -m unittest -v tests.test_safety_windows tests.test_windows_native
           if ($LASTEXITCODE -ne 0) { throw "Existing native Windows filesystem safety tests failed; packaging is blocked." }
           $env:RUFF_CACHE_DIR = Join-Path $env:RUNNER_TEMP "encrypted-copy-ruff-cache"
-          & $testPython -m ruff check tvtime_extractor/extract.py tests/test_windows_encrypted_copy_verification.py
+          & $testPython -m ruff check tvtime_extractor/extract.py tvtime_extractor/safety.py tests/test_windows_encrypted_copy_verification.py
           if ($LASTEXITCODE -ne 0) { throw "The targeted Python lint gate failed." }
-          & $testPython -m ruff format --check tvtime_extractor/extract.py tests/test_windows_encrypted_copy_verification.py
+          & $testPython -m ruff format --check tvtime_extractor/extract.py tvtime_extractor/safety.py tests/test_windows_encrypted_copy_verification.py
           if ($LASTEXITCODE -ne 0) { throw "The targeted Python format gate failed." }
       - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0

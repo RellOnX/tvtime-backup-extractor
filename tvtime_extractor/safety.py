@@ -997,15 +997,33 @@ def _windows_bound_directory_binding(
 
 
 @contextmanager
-def _windows_borrow_or_pin_directory_handle(path: Path) -> Iterator[int]:
+def _windows_borrow_or_pin_directory_handle(
+    path: Path,
+    *,
+    require_bound_within_output: bool = False,
+) -> Iterator[int]:
     """Borrow an exact bound handle, or pin an otherwise unbound directory."""
 
+    state = _WINDOWS_BOUND_OUTPUT_STATE.get()
     binding = _windows_bound_directory_binding(path)
     if binding is not None:
         _visible, handle, _identity = binding
-        yield handle
+        try:
+            yield handle
+        finally:
+            if (
+                _WINDOWS_BOUND_OUTPUT_STATE.get() is not state
+                or _windows_bound_directory_binding(path) != binding
+            ):
+                raise UnsafePathError("A held Windows recovery directory binding changed.")
         return
 
+    if (
+        require_bound_within_output
+        and state is not None
+        and _is_within_casefolded(path, state.visible_root)
+    ):
+        raise UnsafePathError("A private Windows recovery directory binding was unavailable.")
     with _windows_pinned_absolute_directory_handle(path) as handle:
         yield handle
 

@@ -39,6 +39,7 @@ from .safety import (
     EXTRACTION_RUN_STATE_SCHEMA_VERSION,
     ExtractionLayout,
     _require_safe_local_directory_tree,
+    _windows_borrow_or_pin_directory_handle,
     _windows_close_handle,
     _windows_create_and_hold_bound_descendant_directory,
     _windows_directory_identity,
@@ -245,7 +246,11 @@ def _source_payload_state(
             # Private encrypted copies also need the native pinned-file path. Do not
             # compare path lstat() with CRT fstat(): their Windows ctime meanings differ.
             absolute = path.absolute()  # Anchor lexically; never resolve/follow links.
-            with _windows_pinned_absolute_directory_handle(absolute.parent) as parent:
+            if ".." in absolute.parts:
+                raise UnsafePathError("A Windows recovery source path was invalid.")
+            with _windows_borrow_or_pin_directory_handle(
+                absolute.parent, require_bound_within_output=True
+            ) as parent:
                 snapshot, _payload = _windows_source_payload(
                     Path(absolute.name),
                     source_root_handle=parent,
