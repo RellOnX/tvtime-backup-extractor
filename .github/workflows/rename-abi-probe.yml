@@ -1,4 +1,4 @@
-name: Synthetic rename ABI probe
+name: Synthetic guard numeric report only
 
 on:
   push:
@@ -14,7 +14,7 @@ env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
 
 jobs:
-  probe:
+  report:
     runs-on: windows-2022
     timeout-minutes: 10
     steps:
@@ -32,44 +32,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Pinned dependency setup failed." }
           python -m pip check
           if ($LASTEXITCODE -ne 0) { throw "Pinned dependency graph failed." }
-      - name: Compare independent SDK C layout
+      - name: Capture one guard error and stop
         shell: powershell
         run: |
-          $root = Join-Path $env:RUNNER_TEMP "synthetic-rename-abi"
-          if (Test-Path -LiteralPath $root) { throw "Probe output must be fresh." }
+          $root = Join-Path $env:RUNNER_TEMP "synthetic-guard-report"
+          if (Test-Path -LiteralPath $root) { throw "Report destination must be fresh." }
           New-Item -ItemType Directory -Path $root | Out-Null
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if ($LASTEXITCODE -ne 0 -or @($vs).Count -ne 1) { throw "An existing SDK compiler was unavailable." }
-          $vars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
-          $source = Join-Path $env:GITHUB_WORKSPACE "tests\rename_abi_layout.cpp"
-          $binary = Join-Path $root "layout.exe"
-          $object = Join-Path $root "layout.obj"
-          $batch = Join-Path $root "compile-layout.cmd"
-          @"
-          @echo off
-          call "$vars" >nul
-          if errorlevel 1 exit /b 1
-          cl /nologo /EHsc /std:c++17 /W4 /WX /D_WIN32_WINNT=0x0A00 /DWINVER=0x0A00 /Fe:"$binary" /Fo:"$object" "$source"
-          exit /b %errorlevel%
-          "@ | Set-Content -LiteralPath $batch -Encoding ascii
-          & $env:ComSpec /d /c $batch
-          if ($LASTEXITCODE -ne 0) { throw "Independent SDK layout compilation failed." }
-          & $binary | Set-Content -LiteralPath (Join-Path $root "sdk-layout.json") -Encoding utf8
-          if ($LASTEXITCODE -ne 0) { throw "Independent SDK layout execution failed." }
-      - name: Run four predeclared synthetic cases
-        shell: powershell
-        run: |
-          $root = Join-Path $env:RUNNER_TEMP "synthetic-rename-abi"
-          python -m tests.rename_abi_probe --sdk-layout (Join-Path $root "sdk-layout.json") --summary (Join-Path $root "summary.json")
-          if ($LASTEXITCODE -ne 0) { throw "Probe stopped; no workaround or further case is attempted." }
-      - name: Upload numeric and invariant results only
+          python -m tests.guard_error_report --summary (Join-Path $root "guard-report.json")
+          if ($LASTEXITCODE -ne 0) { throw "Report-only check stopped with a fixture or guard failure; no retry." }
+      - name: Upload fixed-category numeric report only
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: synthetic-rename-abi-results
-          path: |
-            ${{ runner.temp }}/synthetic-rename-abi/sdk-layout.json
-            ${{ runner.temp }}/synthetic-rename-abi/summary.json
+          name: synthetic-guard-error-report
+          path: ${{ runner.temp }}/synthetic-guard-report/guard-report.json
           if-no-files-found: warn
           retention-days: 7
