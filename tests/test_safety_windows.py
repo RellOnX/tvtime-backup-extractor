@@ -428,14 +428,26 @@ class WindowsDirectoryHandleContractTests(unittest.TestCase):
                     "tvtime_extractor.safety._windows_pinned_absolute_directory_handle"
                 ) as pin,
             ):
+                ordered = mock.Mock()
+                ordered.attach_mock(identity, "identity")
+                ordered.attach_mock(visible, "visible")
+                ordered.attach_mock(enumerate_entries, "enumerate")
                 directories, files = _safe_directory_entries(directory)
         finally:
             _WINDOWS_BOUND_OUTPUT_STATE.reset(token)
 
         self.assertEqual(directories, ())
         self.assertEqual([item.path for item in files], [directory / "private.bin"])
-        identity.assert_called_once_with(101)
-        visible.assert_called_once_with(directory, expected_identity=(7, 12))
+        self.assertEqual(
+            ordered.mock_calls,
+            [
+                mock.call.identity(101),
+                mock.call.visible(directory, expected_identity=(7, 12)),
+                mock.call.enumerate(101),
+                mock.call.identity(101),
+                mock.call.visible(directory, expected_identity=(7, 12)),
+            ],
+        )
         enumerate_entries.assert_called_once_with(101)
         pin.assert_not_called()
 

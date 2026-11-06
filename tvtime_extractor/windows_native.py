@@ -1578,6 +1578,13 @@ def rename_handle_relative(
 ) -> None:
     """Rename an already-held file beneath a trusted root without reopening its source name."""
 
+    if (
+        not isinstance(root_handle, int)
+        or isinstance(root_handle, bool)
+        or root_handle <= 0
+        or root_handle == INVALID_HANDLE_VALUE
+    ):
+        raise WindowsNativeError("A trusted Windows promotion parent was unavailable.")
     components = validate_relative_parts(destination_parts)
     parent_handle = root_handle
     parent_owned = False
@@ -1588,8 +1595,10 @@ def rename_handle_relative(
                 close_handle(parent_handle)
             parent_handle = child
             parent_owned = True
-        destination = f"{final_path_from_handle(parent_handle)}\\{components[-1]}"
-        encoded = destination.encode("utf-16-le")
+        # Keep the existing local-path validation, but resolve the destination leaf
+        # through the held parent capability rather than reopening its absolute path.
+        final_path_from_handle(parent_handle)
+        encoded = components[-1].encode("utf-16-le")
         filename_offset = _FILE_RENAME_INFO.FileName.offset
         allocation = ctypes.create_string_buffer(filename_offset + len(encoded) + 2)
         information = ctypes.cast(
@@ -1597,7 +1606,7 @@ def rename_handle_relative(
             ctypes.POINTER(_FILE_RENAME_INFO),
         ).contents
         information.ReplaceIfExists = bool(replace)
-        information.RootDirectory = None
+        information.RootDirectory = parent_handle
         information.FileNameLength = len(encoded)
         destination_buffer = ctypes.addressof(allocation) + filename_offset
         ctypes.memmove(destination_buffer, encoded, len(encoded))

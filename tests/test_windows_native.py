@@ -1115,6 +1115,55 @@ class WindowsNativeUnitTests(unittest.TestCase):
             ctypes.sizeof(windows_native._FILE_RENAME_INFO),
         )
 
+    def test_promotion_buffer_uses_held_parent_and_only_validated_leaf(self) -> None:
+        leaf = "synthetic-\U0001f3ac.bin"
+        expected = leaf.encode("utf-16-le")
+
+        def inspect_buffer(handle, information_class, allocation, length):
+            self.assertEqual(handle.value, 73)
+            self.assertEqual(information_class, windows_native.FILE_RENAME_INFO_CLASS)
+            information = ctypes.cast(
+                allocation, ctypes.POINTER(windows_native._FILE_RENAME_INFO)
+            ).contents
+            self.assertFalse(information.ReplaceIfExists)
+            self.assertEqual(information.RootDirectory, 81)
+            self.assertEqual(information.FileNameLength, len(expected))
+            offset = windows_native._FILE_RENAME_INFO.FileName.offset
+            self.assertEqual(
+                ctypes.string_at(ctypes.addressof(allocation) + offset, len(expected)), expected
+            )
+            self.assertEqual(length, offset + len(expected) + 2)
+            return True
+
+        rename = mock.Mock(side_effect=inspect_buffer)
+        with (
+            mock.patch.object(
+                windows_native,
+                "_dll",
+                return_value=types.SimpleNamespace(SetFileInformationByHandle=rename),
+            ),
+            mock.patch.object(windows_native, "open_relative_directory", return_value=81) as parent,
+            mock.patch.object(
+                windows_native, "final_path_from_handle", return_value="synthetic-local-validation"
+            ) as local_gate,
+            mock.patch.object(windows_native, "close_handle") as close,
+        ):
+            windows_native.rename_handle_relative(73, 71, ("nested", leaf), replace=False)
+        parent.assert_called_once_with(71, "nested", writable=True)
+        local_gate.assert_called_once_with(81)
+        rename.assert_called_once()
+        close.assert_called_once_with(81)
+
+    def test_promotion_rejects_invalid_root_before_api_call(self) -> None:
+        for root in (0, -1, True, windows_native.INVALID_HANDLE_VALUE):
+            with (
+                self.subTest(root=root),
+                mock.patch.object(windows_native, "_dll") as api,
+                self.assertRaises(windows_native.WindowsNativeError),
+            ):
+                windows_native.rename_handle_relative(73, root, ("synthetic.bin",), replace=False)
+            api.assert_not_called()
+
     def test_private_volume_probe_rejects_non_ntfs_and_missing_acl_support(self) -> None:
         for capabilities in (
             windows_native.WindowsVolumeCapabilities(
@@ -1533,12 +1582,18 @@ class WindowsNativeNtfsTests(unittest.TestCase):
                     (parent / "synthetic-root" / "stage.partial").unlink()
 
                 native_handle = int(__import__("msvcrt").get_osfhandle(descriptor))
+                before = windows_native.handle_information(native_handle)
                 windows_native.rename_handle_relative(
                     native_handle,
                     root_handle,
                     ("final.bin",),
                     replace=False,
                 )
+                after = windows_native.handle_information(native_handle)
+                self.assertEqual(after.identity, before.identity)
+                self.assertEqual(after.byte_size, before.byte_size)
+                self.assertEqual(after.last_write_time, before.last_write_time)
+                windows_native.validate_private_acl(native_handle)
                 os.lseek(descriptor, 0, os.SEEK_SET)
                 self.assertEqual(os.read(descriptor, len(payload) + 1), payload)
                 os.close(descriptor)
@@ -1554,6 +1609,9 @@ class WindowsNativeNtfsTests(unittest.TestCase):
                     collision_handle,
                     flags=os.O_RDWR | getattr(os, "O_BINARY", 0),
                 )
+                collision_payload = b"synthetic collision bytes"
+                os.write(collision_descriptor, collision_payload)
+                os.fsync(collision_descriptor)
                 collision_native = int(__import__("msvcrt").get_osfhandle(collision_descriptor))
                 with self.assertRaises(windows_native.WindowsObjectExistsError):
                     windows_native.rename_handle_relative(
@@ -1562,6 +1620,13 @@ class WindowsNativeNtfsTests(unittest.TestCase):
                         ("final.bin",),
                         replace=False,
                     )
+                self.assertEqual((parent / "synthetic-root" / "final.bin").read_bytes(), payload)
+                os.lseek(collision_descriptor, 0, os.SEEK_SET)
+                self.assertEqual(
+                    os.read(collision_descriptor, len(collision_payload) + 1), collision_payload
+                )
+                with self.assertRaises(OSError):
+                    (parent / "synthetic-root").rename(parent / "synthetic-renamed-root")
             finally:
                 for file_descriptor in (collision_descriptor, descriptor):
                     if file_descriptor >= 0:

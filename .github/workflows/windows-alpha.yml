@@ -59,14 +59,43 @@ jobs:
           & $testPython -m pip check
           if ($LASTEXITCODE -ne 0) { throw "The Python test dependency graph failed." }
           $env:PYTHONWARNINGS = "error::ResourceWarning"
+          $baselineRoot = Join-Path $env:RUNNER_TEMP "upstream-promotion-baseline"
+          $baselineZip = Join-Path $env:RUNNER_TEMP "upstream-promotion-baseline.zip"
+          if ((Test-Path -LiteralPath $baselineRoot) -or (Test-Path -LiteralPath $baselineZip)) { throw "Baseline source destination must be fresh." }
+          git archive --format=zip --output=$baselineZip b926d5f9e4d492d42efbd4dc57b3869a6a3cdab0
+          if ($LASTEXITCODE -ne 0) { throw "The exact upstream baseline archive failed." }
+          Expand-Archive -LiteralPath $baselineZip -DestinationPath $baselineRoot
+          $start = New-Object System.Diagnostics.ProcessStartInfo
+          $start.FileName = $testPython
+          $start.Arguments = "-m unittest -v tests.test_windows_native.WindowsNativeNtfsTests.test_staging_file_denies_mutation_and_promotes_without_replace"
+          $start.WorkingDirectory = $baselineRoot
+          $start.UseShellExecute = $false
+          $start.RedirectStandardOutput = $true
+          $start.RedirectStandardError = $true
+          $process = [Diagnostics.Process]::Start($start)
+          if ($null -eq $process) { throw "Baseline process outcome is uncertain; stop." }
+          try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(60000)) { $process.Kill(); throw "The synthetic baseline test exceeded its bound." }
+            $baselineLog = $stdout.GetAwaiter().GetResult() + $stderr.GetAwaiter().GetResult()
+            $baselineExit = $process.ExitCode
+          } finally { $process.Dispose() }
+          Write-Host $baselineLog
+          if ($baselineLog -match "skipped") { throw "The native baseline was not exercised." }
+          if ($baselineExit -eq 0) {
+            Write-Host "The exact upstream staging baseline passed on this runner."
+          } elseif ($baselineExit -eq 1 -and $baselineLog.Contains("WinError 32") -and $baselineLog.Contains("rename_handle_relative") -and $baselineLog.Contains("FAILED (errors=1)")) {
+            Write-Host "Confirmed the known upstream staging sharing failure; current candidate must pass all gates below."
+          } else { throw "The upstream comparison produced an unexpected failure; stop." }
           & $testPython -m unittest -v tests.test_windows_encrypted_copy_verification
           if ($LASTEXITCODE -ne 0) { throw "Encrypted-copy native handle or integrity tests failed; packaging is blocked." }
           & $testPython -m unittest -v tests.test_safety_windows tests.test_windows_native
           if ($LASTEXITCODE -ne 0) { throw "Existing native Windows filesystem safety tests failed; packaging is blocked." }
           $env:RUFF_CACHE_DIR = Join-Path $env:RUNNER_TEMP "encrypted-copy-ruff-cache"
-          & $testPython -m ruff check tvtime_extractor/extract.py tvtime_extractor/safety.py tests/test_windows_encrypted_copy_verification.py
+          & $testPython -m ruff check tvtime_extractor/extract.py tvtime_extractor/safety.py tvtime_extractor/windows_native.py tests/test_windows_encrypted_copy_verification.py tests/test_safety_windows.py tests/test_windows_native.py
           if ($LASTEXITCODE -ne 0) { throw "The targeted Python lint gate failed." }
-          & $testPython -m ruff format --check tvtime_extractor/extract.py tvtime_extractor/safety.py tests/test_windows_encrypted_copy_verification.py
+          & $testPython -m ruff format --check tvtime_extractor/extract.py tvtime_extractor/safety.py tvtime_extractor/windows_native.py tests/test_windows_encrypted_copy_verification.py tests/test_safety_windows.py tests/test_windows_native.py
           if ($LASTEXITCODE -ne 0) { throw "The targeted Python format gate failed." }
       - name: Set up pinned .NET SDK
         uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d21461ed1c5d # v5.0.0
