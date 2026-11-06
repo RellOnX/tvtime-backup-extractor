@@ -194,7 +194,7 @@ internal sealed class RecoveryCoordinator
             await preflight.SendControlAsync(
                 EncryptedIosRequest("preflight", payload),
                 cancellationToken);
-            var completed = await ReadToCompletionAsync(preflight, progress, cancellationToken);
+            var completed = await ReadToCompletionAsync(preflight, progress, cancellationToken, HelperRecoveryPhase.BackupValidation);
             if (!completed.TryGetProperty("backup_receipt", out var receiptValue) ||
                 receiptValue.ValueKind != JsonValueKind.Object)
             {
@@ -217,7 +217,7 @@ internal sealed class RecoveryCoordinator
             EncryptedIosRequest("recover", recoveryPayload),
             cancellationToken);
         await recovery.SendSecretAsync(password, cancellationToken);
-        await ReadToCompletionAsync(recovery, progress, cancellationToken);
+        await ReadToCompletionAsync(recovery, progress, cancellationToken, HelperRecoveryPhase.Unlocking);
     }
 
     private static Dictionary<string, object?> EncryptedIosPayload(
@@ -299,13 +299,14 @@ internal sealed class RecoveryCoordinator
         });
         await acquisition.SendControlAsync(request, cancellationToken);
         if (hasSecret) await acquisition.SendSecretAsync(sourcePassword, cancellationToken);
-        await ReadToCompletionAsync(acquisition, progress, cancellationToken);
+        await ReadToCompletionAsync(acquisition, progress, cancellationToken, HelperRecoveryPhase.Acquisition);
     }
 
     private static async Task<JsonElement> ReadToCompletionAsync(
         NativeHelperProcess helper,
         Action<RecoveryProgress> progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        HelperRecoveryPhase lastPhase)
     {
         using var cancellationRegistration = cancellationToken.Register(
             static state => _ = ((NativeHelperProcess)state!).CancelAsync(), helper);
@@ -317,7 +318,9 @@ internal sealed class RecoveryCoordinator
                 var type = root.GetProperty("type").GetString();
                 if (type == "progress")
                 {
-                    progress(RecoveryProgress.FromPayload(root.GetProperty("payload")));
+                    var payload = root.GetProperty("payload");
+                    lastPhase = SafeHelperFailure.Advance(lastPhase, payload);
+                    progress(RecoveryProgress.FromPayload(payload));
                 }
                 else if (type == "completed")
                 {
@@ -327,8 +330,7 @@ internal sealed class RecoveryCoordinator
                 }
                 else if (type is "failed" or "cancelled")
                 {
-                    var code = root.GetProperty("payload").GetProperty("code").GetString();
-                    throw SafeFailure(code);
+                    throw SafeHelperFailure.FromPayload(root.GetProperty("payload"), lastPhase);
                 }
             }
         }
@@ -337,15 +339,4 @@ internal sealed class RecoveryCoordinator
             RecoveryDiagnostic.LocalHelperError);
     }
 
-    private static RecoveryUserException SafeFailure(string? code)
-    {
-        return code switch
-        {
-            "backup_unencrypted" => new("The selected Apple backup is not encrypted.", RecoveryDiagnostic.BackupRejected),
-            "backup_unfinished" => new("The selected Apple backup is not marked finished.", RecoveryDiagnostic.BackupRejected),
-            "backup_password_rejected" => new("The encrypted backup password was not accepted.", RecoveryDiagnostic.BackupRejected),
-            "cancelled" => new("Recovery was cancelled and incomplete output was preserved.", RecoveryDiagnostic.RecoveryCancelled),
-            _ => new("Recovery stopped safely before a completed report was accepted.", RecoveryDiagnostic.LocalHelperError),
-        };
-    }
 }

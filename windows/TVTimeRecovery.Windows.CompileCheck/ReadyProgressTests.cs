@@ -53,6 +53,7 @@ internal static class ReadyProgressTests
         await RequireQuietPostReadyCancellationAsync();
         await RequireMalformedPostReadyAsync();
         RequirePhaseCountsOnly();
+        RequireSafeFailureExplanations();
     }
 
     private static async Task RequireFirstReadyTimeoutAsync(bool partial, bool late)
@@ -150,6 +151,48 @@ internal static class ReadyProgressTests
         }) Require(!Parse(value).IsDeterminate);
         var empty = Parse("{\"stage\":\"extraction\",\"current\":0,\"total\":0}");
         Require(empty.HasExtractionCounts && !empty.IsDeterminate);
+    }
+
+    private static void RequireSafeFailureExplanations()
+    {
+        const string sentinel = "SYNTHETIC_DO_NOT_DISPLAY";
+        var codes = new Dictionary<string, string>
+        {
+            ["invalid_input"] = "options failed a safety check",
+            ["insufficient_space"] = "ran out of usable space",
+            ["output_exists"] = "no longer fresh",
+            ["unsafe_path"] = "path failed a safety check",
+            ["backup_unencrypted"] = "not confirmed as encrypted",
+            ["backup_unfinished"] = "not marked finished",
+            ["app_data_missing"] = "required TV Time app data",
+            ["source_changed"] = "changed during recovery",
+            ["unsupported_schema"] = "cannot safely interpret",
+            ["backup_password_rejected"] = "could not be unlocked",
+            ["partial_extraction"] = "could not be copied safely",
+            ["cancelled"] = "was cancelled",
+            ["recovery_failed"] = "without a more specific supported explanation",
+            [sentinel] = "without a more specific supported explanation",
+        };
+        foreach (var pair in codes)
+        {
+            using var document = JsonDocument.Parse(JsonSerializer.Serialize(new { code = pair.Key, message = sentinel }));
+            var error = SafeHelperFailure.FromPayload(document.RootElement, HelperRecoveryPhase.BackupValidation);
+            Require(error.SafeMessage.Contains(pair.Value, StringComparison.Ordinal));
+            Require(error.SafeMessage.EndsWith("Last phase: backup validation.", StringComparison.Ordinal));
+            Require(!error.SafeMessage.Contains(sentinel, StringComparison.Ordinal));
+        }
+        foreach (var text in new[] { "{}", "{\"code\":7}", "{\"code\":null}" })
+        {
+            using var document = JsonDocument.Parse(text);
+            var error = SafeHelperFailure.FromPayload(document.RootElement, HelperRecoveryPhase.Report);
+            Require(error.SafeMessage.Contains("without a more specific supported explanation", StringComparison.Ordinal));
+            Require(error.SafeMessage.EndsWith("Last phase: report creation.", StringComparison.Ordinal));
+        }
+        using var extraction = JsonDocument.Parse("{\"stage\":\"extraction\"}");
+        using var unknown = JsonDocument.Parse("{\"stage\":\"SYNTHETIC_DO_NOT_DISPLAY\"}");
+        var phase = SafeHelperFailure.Advance(HelperRecoveryPhase.BackupValidation, extraction.RootElement);
+        Require(phase == HelperRecoveryPhase.Extraction);
+        Require(SafeHelperFailure.Advance(phase, unknown.RootElement) == phase);
     }
 
     private static async Task RejectAsync(Func<Task> action)
